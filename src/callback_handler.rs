@@ -64,6 +64,120 @@ impl CallbackHandler {
         self.tx.clone()
     }
 
+    pub async fn loop_eval(&mut self) {
+        while let Some(req) = self.rx.recv().await {
+            // let tx = self.tx.clone();
+            let mut kubernetes_client = self.kubernetes_client.clone();
+
+            tokio::spawn(async move {
+                match req.request {
+                    CallbackRequestType::KubernetesListResourceNamespace {
+                        api_version,
+                        kind,
+                        namespace,
+                        label_selector,
+                        field_selector,
+                    } => {
+                        handle_callback!(
+                            req,
+                            format!("[{namespace}] {api_version}/{kind}"),
+                            "List namespaced Kubernetes resource",
+                            {
+                                kubernetes::list_resources_by_namespace(
+                                    kubernetes_client.as_mut(),
+                                    &api_version,
+                                    &kind,
+                                    &namespace,
+                                    label_selector,
+                                    field_selector,
+                                )
+                            }
+                        )
+                    }
+                    CallbackRequestType::KubernetesListResourceAll {
+                        api_version,
+                        kind,
+                        label_selector,
+                        field_selector,
+                    } => {
+                        handle_callback!(
+                            req,
+                            format!("{api_version}/{kind}"),
+                            "List Kubernetes resource",
+                            {
+                                kubernetes::list_resources_all(
+                                    kubernetes_client.as_mut(),
+                                    &api_version,
+                                    &kind,
+                                    label_selector,
+                                    field_selector,
+                                )
+                            }
+                        )
+                    }
+                    CallbackRequestType::KubernetesGetResource {
+                        api_version,
+                        kind,
+                        name,
+                        namespace,
+                        disable_cache,
+                    } => {
+                        if disable_cache {
+                            handle_callback!(
+                                req,
+                                format!("{api_version}/{kind}"),
+                                "Get Kubernetes resource - no cache",
+                                {
+                                    kubernetes::get_resource(
+                                        kubernetes_client.as_mut(),
+                                        &api_version,
+                                        &kind,
+                                        &name,
+                                        namespace.as_deref(),
+                                    )
+                                }
+                            )
+                        } else {
+                            handle_callback!(
+                                req,
+                                format!("{api_version}/{kind}"),
+                                "Get Kubernetes resource",
+                                {
+                                    kubernetes::get_resource_cached(
+                                        kubernetes_client.as_mut(),
+                                        &api_version,
+                                        &kind,
+                                        &name,
+                                        namespace.as_deref(),
+                                    )
+                                }
+                            )
+                        }
+                    }
+                    CallbackRequestType::KubernetesGetResourcePluralName { api_version, kind } => {
+                        handle_callback!(
+                            req,
+                            format!("{api_version}/{kind}"),
+                            "Get Kubernetes resource plural name",
+                            {
+                                kubernetes::get_resource_plural_name(
+                                    kubernetes_client.as_mut(),
+                                    &api_version,
+                                    &kind,
+                                )
+                            }
+                        )
+                    }
+
+                    // Handle different types of requests as before...
+                    _ => {
+                        warn!("Unsupported request type received");
+                    }
+                }
+            });
+        }
+    }
+
     /// Enter an endless loop that:
     ///    1. Waits for requests to be evaluated
     ///    2. Evaluate the request
@@ -71,7 +185,7 @@ impl CallbackHandler {
     ///
     /// The loop is interrupted only when a message is sent over the
     /// `shutdown_channel`.
-    pub async fn loop_eval(&mut self) {
+    pub async fn loop_eval_old(&mut self) {
         loop {
             tokio::select! {
                 // place the shutdown check before the message evaluation,
