@@ -352,7 +352,7 @@ async fn test_oci_manifest_capability(
     match rx.await {
         Ok(msg) => match msg {
             Ok(response_raw) => {
-                let response: OciManifest = serde_json::from_slice(&response_raw.payload).unwrap();
+                let response: OciManifest = serde_json::from_value(response_raw.payload).unwrap();
                 println!("{:?}", response);
                 match (response, expected_manifest_type) {
                     (OciManifest::Image { .. }, OciManifest::ImageIndex { .. }) => {

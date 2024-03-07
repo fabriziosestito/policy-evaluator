@@ -44,7 +44,7 @@ macro_rules! handle_callback {
                     cached = response.was_cached,
                     $log_msg,
                 );
-                let payload = serde_json::to_vec(&response.value)
+                let payload = serde_json::to_value(&response.value)
                     .map_err(|e| anyhow!("error serializing payload: {e:?}"))?;
                 Ok(CallbackResponse { payload })
             })
@@ -190,7 +190,7 @@ impl CallbackHandler {
                                 ips: ips.iter().map(|ip| ip.to_string()).collect(),
                             };
                             CallbackResponse {
-                                payload: serde_json::to_vec(&res).unwrap(),
+                                payload: serde_json::to_value(res).unwrap(),
                             }
                         })
                         .map_err(anyhow::Error::new);

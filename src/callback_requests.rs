@@ -11,7 +11,7 @@ use tokio::sync::oneshot;
 #[derive(Debug, Clone)]
 pub struct CallbackResponse {
     /// The data to be given back to the waPC guest
-    pub payload: Vec<u8>,
+    pub payload: serde_json::Value,
 }
 
 /// A request sent by some synchronous code (usually waPC's host_callback)

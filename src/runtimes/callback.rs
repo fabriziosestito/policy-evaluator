@@ -422,7 +422,7 @@ fn send_request_and_wait_for_response(
         match rx.try_recv() {
             Ok(msg) => {
                 return match msg {
-                    Ok(resp) => Ok(resp.payload),
+                    Ok(resp) => Ok(serde_json::to_string(&resp.payload)?.as_bytes().to_owned()),
                     Err(e) => {
                         error!(
                             policy_id,

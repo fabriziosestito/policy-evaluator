@@ -52,7 +52,7 @@ fn get_all_resources_by_type(
     };
 
     let response = make_request_via_callback_channel(req_type, callback_channel)?;
-    serde_json::from_slice::<ObjectList<kube::core::DynamicObject>>(&response.payload)
+    serde_json::from_value::<ObjectList<kube::core::DynamicObject>>(response.payload)
         .map_err(RegoRuntimeError::CallbackConvertList)
 }
 
@@ -72,7 +72,7 @@ pub(crate) fn get_plural_names(
         };
 
         let response = make_request_via_callback_channel(req_type, callback_channel)?;
-        let plural_name = serde_json::from_slice::<String>(&response.payload)
+        let plural_name = serde_json::from_value::<String>(response.payload)
             .map_err(RegoRuntimeError::CallbackGetPluralName)?;
 
         plural_names_by_resource.insert(resource.to_owned(), plural_name);
@@ -181,7 +181,7 @@ pub(crate) mod tests {
 
             let services_list = object_list_from_dynamic_objects(&services).unwrap();
             let callback_response = CallbackResponse {
-                payload: serde_json::to_vec(&services_list).unwrap(),
+                payload: serde_json::to_value(services_list).unwrap(),
             };
 
             req.response_channel.send(Ok(callback_response)).unwrap();
@@ -226,7 +226,7 @@ pub(crate) mod tests {
             };
 
             let callback_response = CallbackResponse {
-                payload: serde_json::to_vec(&plural_name).unwrap(),
+                payload: serde_json::to_value(plural_name).unwrap(),
             };
 
             req.response_channel.send(Ok(callback_response)).unwrap();
