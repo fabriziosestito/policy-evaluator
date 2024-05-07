@@ -189,14 +189,6 @@ impl Client {
     }
 }
 
-#[cached(
-    time = 60,
-    result = true,
-    sync_writes = true,
-    key = "String",
-    convert = r#"{ format!("list_resources_by_namespace({},{},{},{:?},{:?})", api_version, kind, namespace, label_selector, field_selector) }"#,
-    with_cached_flag = true
-)]
 pub(crate) async fn list_resources_by_namespace(
     client: Option<&mut Client>,
     api_version: &str,
@@ -222,14 +214,6 @@ pub(crate) async fn list_resources_by_namespace(
         .map(cached::Return::new)
 }
 
-#[cached(
-    time = 60,
-    result = true,
-    sync_writes = true,
-    key = "String",
-    convert = r#"{ format!("list_resources_all({},{}),{:?},{:?}", api_version, kind,label_selector,field_selector) }"#,
-    with_cached_flag = true
-)]
 pub(crate) async fn list_resources_all(
     client: Option<&mut Client>,
     api_version: &str,
