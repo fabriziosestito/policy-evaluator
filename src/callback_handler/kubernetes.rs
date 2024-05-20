@@ -29,7 +29,7 @@ pub(crate) async fn list_resources_by_namespace(
     namespace: &str,
     label_selector: Option<String>,
     field_selector: Option<String>,
-) -> Result<cached::Return<ObjectList<kube::core::DynamicObject>>> {
+) -> Result<cached::Return<Box<serde_json::value::RawValue>>> {
     if client.is_none() {
         return Err(anyhow!("kube::Client was not initialized properly")).map(cached::Return::new);
     }
@@ -47,7 +47,7 @@ pub(crate) async fn list_resources_all(
     kind: &str,
     label_selector: Option<String>,
     field_selector: Option<String>,
-) -> Result<cached::Return<ObjectList<kube::core::DynamicObject>>> {
+) -> Result<cached::Return<Box<serde_json::value::RawValue>>> {
     if client.is_none() {
         return Err(anyhow!("kube::Client was not initialized properly")).map(cached::Return::new);
     }

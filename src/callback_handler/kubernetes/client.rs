@@ -35,7 +35,7 @@ impl Client {
         namespace: &str,
         label_selector: Option<String>,
         field_selector: Option<String>,
-    ) -> Result<ObjectList<DynamicObject>> {
+    ) -> Result<Box<serde_json::value::RawValue>> {
         let resource = self.build_kube_resource(api_version, kind).await?;
         if !resource.namespaced {
             return Err(anyhow!("resource {api_version}/{kind} is cluster wide. Cannot search for it inside of a namespace"));
@@ -63,7 +63,7 @@ impl Client {
         kind: &str,
         label_selector: Option<String>,
         field_selector: Option<String>,
-    ) -> Result<ObjectList<kube::core::DynamicObject>> {
+    ) -> Result<Box<serde_json::value::RawValue>> {
         let resource = self.build_kube_resource(api_version, kind).await?;
 
         let store = self.get_reflector_store(resource.resource).await?;
