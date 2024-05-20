@@ -29,5 +29,6 @@ pub use kubewarden_policy_sdk;
 pub use kubewarden_policy_sdk::metadata::ProtocolVersion;
 pub use policy_evaluator::policy_evaluator_builder;
 pub use policy_fetcher;
+pub use sqlx;
 pub use validator;
 pub use wasmtime_provider::wasmtime;

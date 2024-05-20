@@ -299,8 +299,6 @@ impl CallbackHandler {
                 CallbackRequestType::HasKubernetesListResourceAllResultChangedSinceInstant {
                     api_version,
                     kind,
-                    label_selector,
-                    field_selector,
                     since,
                 } => {
                     handle_callback!(
@@ -312,14 +310,12 @@ impl CallbackHandler {
                                 kubernetes_client.as_mut(),
                                 &api_version,
                                 &kind,
-                                label_selector,
-                                field_selector,
                                 since,
                             )
                         }
                     )
                 }
             }
-        });
+        }).await.unwrap();
     }
 }

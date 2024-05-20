@@ -1,35 +1,17 @@
-use anyhow::Result;
+use anyhow::{anyhow, Result};
 use futures::{future::ready, Stream, StreamExt, TryStreamExt};
-use kube::{runtime::reflector::store, Resource};
 use kube::{
-    runtime::{reflector::store::Writer, watcher, WatchStreamExt},
+    core::DynamicObject,
+    discovery::ApiResource,
+    runtime::{watcher, WatchStreamExt},
     ResourceExt,
 };
-use std::hash::Hash;
+use std::sync::Mutex;
+use tokio::sync::oneshot;
 use tokio::{sync::watch, time::Instant};
-use tracing::{debug, info, warn};
+use tracing::{debug, error, info, warn};
 
-use crate::callback_handler::kubernetes::KubeResource;
-
-/// Like `kube::runtime::reflector::reflector`, but also sends the time of the last change to a
-/// watch channel
-pub fn reflector_tracking_changes_instant<K, W>(
-    mut writer: store::Writer<K>,
-    stream: W,
-    last_change_seen_at: watch::Sender<Instant>,
-) -> impl Stream<Item = W::Item>
-where
-    K: Resource + Clone,
-    K::DynamicType: Eq + Hash + Clone,
-    W: Stream<Item = watcher::Result<watcher::Event<K>>>,
-{
-    stream.inspect_ok(move |event| {
-        if let Err(err) = last_change_seen_at.send(Instant::now()) {
-            warn!(error = ?err, "failed to set last_change_seen_at");
-        }
-        writer.apply_watcher_event(event)
-    })
-}
+use crate::callback_handler::kubernetes::store::Store;
 
 /// A reflector fetches kubernetes objects based on filtering criteria.
 /// When created, the list is populated slowly, to prevent hammering the Kubernetes API server.
@@ -49,70 +31,29 @@ where
 /// Finally, when started, the Reflector takes some time to make the loaded data available to
 /// consumers.
 pub(crate) struct Reflector {
-    /// Read-only access to the data cached by the Reflector
-    pub reader: kube::runtime::reflector::Store<kube::core::DynamicObject>,
+    pub(crate) store: Store,
     last_change_seen_at: watch::Receiver<Instant>,
 }
 
 impl Reflector {
-    /// Compute a unique identifier for the Reflector. This is used to prevent the creation of two
-    /// Reflectors watching the same set of resources.
-    pub fn compute_id(
-        resource: &KubeResource,
-        namespace: Option<&str>,
-        label_selector: Option<&str>,
-        field_selector: Option<&str>,
-    ) -> String {
-        format!(
-            "{}|{}|{namespace:?}|{label_selector:?}|{field_selector:?}",
-            resource.resource.api_version, resource.resource.kind
-        )
-    }
-
     /// Create the reflector and start a tokio task in the background that keeps
     /// the contents of the Reflector updated
-    pub async fn create_and_run(
+    pub(crate) async fn create_and_run(
         kube_client: kube::Client,
-        resource: KubeResource,
-        namespace: Option<String>,
-        label_selector: Option<String>,
-        field_selector: Option<String>,
+        db_pool: sqlx::SqlitePool,
+        api_resource: &ApiResource,
     ) -> Result<Self> {
-        let group = resource.resource.group.clone();
-        let version = resource.resource.version.clone();
-        let kind = resource.resource.kind.clone();
+        let store = Store::new(api_resource.clone(), db_pool).await?;
 
-        info!(
-            group,
-            version,
-            kind,
-            ?namespace,
-            ?label_selector,
-            ?field_selector,
-            "creating new reflector"
-        );
+        let group = api_resource.group.clone();
+        let version = api_resource.version.clone();
+        let kind = api_resource.kind.clone();
 
-        let api = match namespace {
-            Some(ref ns) => kube::api::Api::<kube::core::DynamicObject>::namespaced_with(
-                kube_client,
-                ns,
-                &resource.resource,
-            ),
-            None => kube::api::Api::<kube::core::DynamicObject>::all_with(
-                kube_client,
-                &resource.resource,
-            ),
-        };
+        info!(group, version, kind, "creating new reflector");
 
-        let writer = Writer::new(resource.resource);
-        let reader = writer.as_reader();
+        let api = kube::api::Api::<kube::core::DynamicObject>::all_with(kube_client, api_resource);
 
-        let filter = watcher::Config {
-            label_selector: label_selector.clone(),
-            field_selector: field_selector.clone(),
-            ..Default::default()
-        };
-        let stream = watcher(api, filter).map_ok(|ev| {
+        let stream = watcher(api, watcher::Config::default()).map_ok(|ev| {
             ev.modify(|obj| {
                 // clear managed fields to reduce memory usage
                 obj.managed_fields_mut().clear();
@@ -121,48 +62,93 @@ impl Reflector {
 
         // this is a watch channel that tracks the last time the reflector saw a change
         let (updated_at_watch_tx, updated_at_watch_rx) = watch::channel(Instant::now());
+        let (ready_tx, ready_rx) = oneshot::channel::<Result<()>>();
+        let rf = reflector(store.clone(), stream);
 
-        let rf = reflector_tracking_changes_instant(writer, stream, updated_at_watch_tx);
+        let ready_tx = Mutex::new(Some(ready_tx));
 
-        tokio::spawn(async move {
-            let infinite_watch = rf.default_backoff().touched_objects().for_each(|obj| {
-                match obj {
-                    Ok(o) => debug!(
-                        group,
-                        version,
-                        kind,
-                        ?namespace,
-                        ?label_selector,
-                        ?field_selector,
-                        object=?o,
-                        "watcher saw object"
-                    ),
-                    Err(e) => warn!(
-                        group,
-                        version,
-                        kind,
-                        ?namespace,
-                        ?label_selector,
-                        ?field_selector,
-                        error=?e,
-                        "watcher error"
-                    ),
-                };
-                ready(())
-            });
+        tokio::task::spawn(async move {
+            let infinite_watch = rf
+                .take_while(|obj| match obj {
+                    Err(watcher::Error::InitialListFailed(err)) => {
+                        error!(error = ?err, "watcher error: initial list failed");
+                        if let Some(ready_tx) = ready_tx.lock().unwrap().take() {
+                            ready_tx.send(Err(anyhow!(err.to_string()))).unwrap();
+                        }
+
+                        ready(false)
+                    }
+                    _ => {
+                        if let Err(err) = updated_at_watch_tx.send(Instant::now()) {
+                            warn!(error = ?err, "failed to set last_change_seen_at");
+                        };
+
+                        if let Some(ready_tx) = ready_tx.lock().unwrap().take() {
+                            ready_tx.send(Ok(())).unwrap();
+                        }
+
+                        ready(true)
+                    }
+                })
+                .default_backoff()
+                .touched_objects()
+                .for_each(|obj| {
+                    match obj {
+                        Ok(o) => debug!(
+                            group,
+                            version,
+                            kind,
+                            object=?o,
+                            "watcher saw object"
+                        ),
+                        Err(e) => error!(
+                            group,
+                            version,
+                            kind,
+                            error=?e,
+                            "watcher error"
+
+                        ),
+                    };
+                    ready(())
+                });
             infinite_watch.await
         });
 
-        reader.wait_until_ready().await?;
+        ready_rx.await??;
 
         Ok(Reflector {
-            reader,
+            store,
             last_change_seen_at: updated_at_watch_rx,
         })
     }
 
     /// Get the last time a change was seen by the reflector
-    pub async fn last_change_seen_at(&self) -> Instant {
+    pub(crate) async fn last_change_seen_at(&self) -> Instant {
         *self.last_change_seen_at.borrow()
     }
+}
+
+fn reflector<W>(store: Store, stream: W) -> impl Stream<Item = W::Item>
+where
+    W: Stream<Item = watcher::Result<watcher::Event<DynamicObject>>>,
+{
+    stream.and_then(move |event| {
+        let store = store.clone();
+
+        async move {
+            match event {
+                watcher::Event::Applied(ref object) => {
+                    store.insert_or_replace_object(object).await.unwrap();
+                }
+                watcher::Event::Deleted(ref object) => {
+                    store.delete_object(object).await.unwrap();
+                }
+                watcher::Event::Restarted(ref objects) => {
+                    store.replace_objects(objects).await.unwrap();
+                }
+            }
+            Ok(event)
+        }
+    })
 }

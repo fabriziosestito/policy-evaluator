@@ -1,24 +1,135 @@
 use anyhow::{anyhow, Result};
-use kube::core::{DynamicObject, ObjectList};
+use kube::{
+    core::{DynamicObject, ObjectList},
+    discovery::ApiResource,
+};
 use std::{collections::HashMap, sync::Arc};
 use tokio::{sync::RwLock, time::Instant};
 
 use crate::callback_handler::kubernetes::{reflector::Reflector, ApiVersionKind, KubeResource};
 
+use super::{selector::Selector, store::Store};
+
 #[derive(Clone)]
 pub(crate) struct Client {
     kube_client: kube::Client,
+    db_pool: sqlx::SqlitePool,
     kube_resources: Arc<RwLock<HashMap<ApiVersionKind, KubeResource>>>,
-    reflectors: Arc<RwLock<HashMap<String, Reflector>>>,
+    reflectors: Arc<RwLock<HashMap<ApiResource, Reflector>>>,
 }
 
 impl Client {
-    pub fn new(client: kube::Client) -> Self {
+    pub(crate) fn new(kube_client: kube::Client, db_pool: sqlx::SqlitePool) -> Self {
         Self {
-            kube_client: client,
+            kube_client,
+            db_pool,
             kube_resources: Arc::new(RwLock::new(HashMap::new())),
             reflectors: Arc::new(RwLock::new(HashMap::new())),
         }
+    }
+
+    pub(crate) async fn list_resources_by_namespace(
+        &mut self,
+        api_version: &str,
+        kind: &str,
+        namespace: &str,
+        label_selector: Option<String>,
+        field_selector: Option<String>,
+    ) -> Result<ObjectList<DynamicObject>> {
+        let resource = self.build_kube_resource(api_version, kind).await?;
+        if !resource.namespaced {
+            return Err(anyhow!("resource {api_version}/{kind} is cluster wide. Cannot search for it inside of a namespace"));
+        }
+
+        let store = self.get_reflector_store(resource.resource).await?;
+
+        let label_selector = label_selector
+            .map(|ls| Selector::from_string(&ls))
+            .transpose()?;
+        let field_selector = field_selector
+            .map(|fs| Selector::from_string(&fs))
+            .transpose()?;
+
+        let resources = store
+            .list_objects(Some(namespace), label_selector, field_selector)
+            .await?;
+
+        Ok(resources)
+    }
+
+    pub(crate) async fn list_resources_all(
+        &mut self,
+        api_version: &str,
+        kind: &str,
+        label_selector: Option<String>,
+        field_selector: Option<String>,
+    ) -> Result<ObjectList<kube::core::DynamicObject>> {
+        let resource = self.build_kube_resource(api_version, kind).await?;
+
+        let store = self.get_reflector_store(resource.resource).await?;
+
+        let label_selector = label_selector
+            .map(|ls| Selector::from_string(&ls))
+            .transpose()?;
+        let field_selector = field_selector
+            .map(|fs| Selector::from_string(&fs))
+            .transpose()?;
+
+        let resources = store
+            .list_objects(None, label_selector, field_selector)
+            .await?;
+
+        Ok(resources)
+    }
+
+    pub(crate) async fn has_list_resources_all_result_changed_since_instant(
+        &mut self,
+        api_version: &str,
+        kind: &str,
+        since: Instant,
+    ) -> Result<bool> {
+        let resource = self.build_kube_resource(api_version, kind).await?;
+
+        Ok(self
+            .have_reflector_resources_changed_since(&resource, since)
+            .await)
+    }
+
+    pub(crate) async fn get_resource(
+        &mut self,
+        api_version: &str,
+        kind: &str,
+        name: &str,
+        namespace: Option<&str>,
+    ) -> Result<DynamicObject> {
+        let resource = self.build_kube_resource(api_version, kind).await?;
+
+        if resource.namespaced && namespace.is_none() {
+            return Err(anyhow!(
+                "Resource {}/{} is namespaced, but no namespace was provided",
+                api_version,
+                kind
+            ));
+        };
+
+        let store = self.get_reflector_store(resource.resource).await?;
+        let resource = store.get_object(name, namespace).await?;
+
+        Ok(resource)
+
+        // api.get_opt(name)
+        //     .await
+        //     .map_err(anyhow::Error::new)?
+        //     .ok_or_else(|| anyhow!("Cannot find {api_version}/{kind} named '{name}' inside of namespace '{namespace:?}'"))
+    }
+
+    pub(crate) async fn get_resource_plural_name(
+        &mut self,
+        api_version: &str,
+        kind: &str,
+    ) -> Result<String> {
+        let resource = self.build_kube_resource(api_version, kind).await?;
+        Ok(resource.resource.plural)
     }
 
     /// Build a KubeResource using the apiVersion and Kind "coordinates" provided.
@@ -86,205 +197,47 @@ impl Client {
         Ok(kube_resource)
     }
 
-    async fn get_reflector_reader(
-        &mut self,
-        reflector_id: &str,
-        resource: KubeResource,
-        namespace: Option<String>,
-        label_selector: Option<String>,
-        field_selector: Option<String>,
-    ) -> Result<kube::runtime::reflector::Store<kube::core::DynamicObject>> {
-        let reader = {
+    async fn get_reflector_store(&mut self, api_resource: ApiResource) -> Result<Store> {
+        let store = {
             let reflectors = self.reflectors.read().await;
             reflectors
-                .get(reflector_id)
-                .map(|reflector| reflector.reader.clone())
+                .get(&api_resource)
+                .map(|reflector| reflector.store.clone())
         };
-        if let Some(reader) = reader {
-            return Ok(reader);
+        if let Some(store) = store {
+            return Ok(store);
         }
 
         let reflector = Reflector::create_and_run(
             self.kube_client.clone(),
-            resource,
-            namespace,
-            label_selector,
-            field_selector,
+            self.db_pool.clone(),
+            &api_resource,
         )
         .await?;
-        let reader = reflector.reader.clone();
+        let store = reflector.store.clone();
 
         {
             let mut reflectors = self.reflectors.write().await;
-            reflectors.insert(reflector_id.to_string(), reflector);
+            reflectors.insert(api_resource, reflector);
         }
 
-        Ok(reader)
-    }
-
-    pub async fn list_resources_by_namespace(
-        &mut self,
-        api_version: &str,
-        kind: &str,
-        namespace: &str,
-        label_selector: Option<String>,
-        field_selector: Option<String>,
-    ) -> Result<ObjectList<kube::core::DynamicObject>> {
-        let resource = self.build_kube_resource(api_version, kind).await?;
-        if !resource.namespaced {
-            return Err(anyhow!("resource {api_version}/{kind} is cluster wide. Cannot search for it inside of a namespace"));
-        }
-
-        self.list_resources_from_reflector(
-            resource,
-            Some(namespace.to_owned()),
-            label_selector,
-            field_selector,
-        )
-        .await
-    }
-
-    pub async fn list_resources_all(
-        &mut self,
-        api_version: &str,
-        kind: &str,
-        label_selector: Option<String>,
-        field_selector: Option<String>,
-    ) -> Result<ObjectList<kube::core::DynamicObject>> {
-        let resource = self.build_kube_resource(api_version, kind).await?;
-
-        self.list_resources_from_reflector(resource, None, label_selector, field_selector)
-            .await
-    }
-
-    pub async fn has_list_resources_all_result_changed_since_instant(
-        &mut self,
-        api_version: &str,
-        kind: &str,
-        label_selector: Option<String>,
-        field_selector: Option<String>,
-        since: Instant,
-    ) -> Result<bool> {
-        let resource = self.build_kube_resource(api_version, kind).await?;
-
-        Ok(self
-            .have_reflector_resources_changed_since(
-                &resource,
-                None,
-                label_selector,
-                field_selector,
-                since,
-            )
-            .await)
-    }
-
-    async fn list_resources_from_reflector(
-        &mut self,
-        resource: KubeResource,
-        namespace: Option<String>,
-        label_selector: Option<String>,
-        field_selector: Option<String>,
-    ) -> Result<ObjectList<kube::core::DynamicObject>> {
-        let api_version = resource.resource.api_version.clone();
-        let kind = resource.resource.kind.clone();
-
-        let reflector_id = Reflector::compute_id(
-            &resource,
-            namespace.as_deref(),
-            label_selector.as_deref(),
-            field_selector.as_deref(),
-        );
-
-        let reader = self
-            .get_reflector_reader(
-                &reflector_id,
-                resource,
-                namespace,
-                label_selector,
-                field_selector,
-            )
-            .await?;
-
-        Ok(ObjectList {
-            types: kube::core::TypeMeta {
-                api_version,
-                kind: format!("{kind}List"),
-            },
-            metadata: Default::default(),
-            items: reader
-                .state()
-                .iter()
-                .map(|v| DynamicObject::clone(v))
-                .collect(),
-        })
+        Ok(store)
     }
 
     /// Check if the resources cached by the reflector have changed since the provided instant
     async fn have_reflector_resources_changed_since(
         &mut self,
         resource: &KubeResource,
-        namespace: Option<String>,
-        label_selector: Option<String>,
-        field_selector: Option<String>,
         since: Instant,
     ) -> bool {
-        let reflector_id = Reflector::compute_id(
-            resource,
-            namespace.as_deref(),
-            label_selector.as_deref(),
-            field_selector.as_deref(),
-        );
-
         let last_change_seen_at = {
             let reflectors = self.reflectors.read().await;
-            match reflectors.get(&reflector_id) {
+            match reflectors.get(&resource.resource) {
                 Some(reflector) => reflector.last_change_seen_at().await,
                 None => return true,
             }
         };
 
         last_change_seen_at > since
-    }
-
-    pub async fn get_resource(
-        &mut self,
-        api_version: &str,
-        kind: &str,
-        name: &str,
-        namespace: Option<&str>,
-    ) -> Result<kube::core::DynamicObject> {
-        let resource = self.build_kube_resource(api_version, kind).await?;
-
-        let api = match resource.namespaced {
-            true => kube::api::Api::<kube::core::DynamicObject>::namespaced_with(
-                self.kube_client.clone(),
-                namespace.ok_or_else(|| {
-                    anyhow!(
-                        "Resource {}/{} is namespaced, but no namespace was provided",
-                        api_version,
-                        kind
-                    )
-                })?,
-                &resource.resource,
-            ),
-            false => kube::api::Api::<kube::core::DynamicObject>::all_with(
-                self.kube_client.clone(),
-                &resource.resource,
-            ),
-        };
-
-        api.get_opt(name)
-            .await
-            .map_err(anyhow::Error::new)?
-            .ok_or_else(|| anyhow!("Cannot find {api_version}/{kind} named '{name}' inside of namespace '{namespace:?}'"))
-    }
-
-    pub async fn get_resource_plural_name(
-        &mut self,
-        api_version: &str,
-        kind: &str,
-    ) -> Result<String> {
-        let resource = self.build_kube_resource(api_version, kind).await?;
-        Ok(resource.resource.plural)
     }
 }

@@ -81,8 +81,6 @@ fn has_resource_changed_since(
     let req_type = CallbackRequestType::HasKubernetesListResourceAllResultChangedSinceInstant {
         api_version: resource_type.api_version.to_owned(),
         kind: resource_type.kind.to_owned(),
-        label_selector: None,
-        field_selector: None,
         since,
     };
 
@@ -313,16 +311,12 @@ pub(crate) mod tests {
                 CallbackRequestType::HasKubernetesListResourceAllResultChangedSinceInstant {
                     api_version,
                     kind,
-                    label_selector,
-                    field_selector,
                     since: _,
                 } => {
                     let resource = ContextAwareResource {
                         api_version: api_version.clone(),
                         kind: kind.clone(),
                     };
-                    assert!(label_selector.is_none());
-                    assert!(field_selector.is_none());
 
                     expected_resources_with_change_status
                         .get(&resource)

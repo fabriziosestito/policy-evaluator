@@ -244,14 +244,10 @@ pub(crate) mod tests {
                     CallbackRequestType::HasKubernetesListResourceAllResultChangedSinceInstant {
                         api_version,
                         kind,
-                        label_selector,
-                        field_selector,
                         since: _,
                     } => {
                         assert_eq!(api_version, expected_resource.api_version);
                         assert_eq!(kind, expected_resource.kind);
-                        assert!(label_selector.is_none());
-                        assert!(field_selector.is_none());
 
                         CallbackResponse {
                             payload: serde_json::to_vec(&false).unwrap(),
@@ -319,13 +315,12 @@ pub(crate) mod tests {
                     CallbackRequestType::KubernetesListResourceAll {
                         api_version,
                         kind,
-                        label_selector,
-                        field_selector,
+                        label_selector: None,
+                        field_selector: None,
                     } => {
                         assert_eq!(api_version, expected_resource.api_version);
                         assert_eq!(kind, expected_resource.kind);
-                        assert!(label_selector.is_none());
-                        assert!(field_selector.is_none());
+
                         CallbackResponse {
                             payload: serde_json::to_vec(&services_list).unwrap(),
                         }
@@ -333,14 +328,10 @@ pub(crate) mod tests {
                     CallbackRequestType::HasKubernetesListResourceAllResultChangedSinceInstant {
                         api_version,
                         kind,
-                        label_selector,
-                        field_selector,
                         since: _,
                     } => {
                         assert_eq!(api_version, expected_resource.api_version);
                         assert_eq!(kind, expected_resource.kind);
-                        assert!(label_selector.is_none());
-                        assert!(field_selector.is_none());
 
                         CallbackResponse {
                             payload: serde_json::to_vec(&true).unwrap(),

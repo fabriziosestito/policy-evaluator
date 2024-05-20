@@ -1,5 +1,7 @@
 mod client;
 mod reflector;
+mod selector;
+mod store;
 
 use anyhow::{anyhow, Result};
 use cached::proc_macro::cached;
@@ -123,8 +125,6 @@ pub(crate) async fn has_list_resources_all_result_changed_since_instant(
     client: Option<&mut Client>,
     api_version: &str,
     kind: &str,
-    label_selector: Option<String>,
-    field_selector: Option<String>,
     since: tokio::time::Instant,
 ) -> Result<cached::Return<bool>> {
     if client.is_none() {
@@ -133,13 +133,7 @@ pub(crate) async fn has_list_resources_all_result_changed_since_instant(
 
     client
         .unwrap()
-        .has_list_resources_all_result_changed_since_instant(
-            api_version,
-            kind,
-            label_selector,
-            field_selector,
-            since,
-        )
+        .has_list_resources_all_result_changed_since_instant(api_version, kind, since)
         .await
         .map(cached::Return::new)
 }

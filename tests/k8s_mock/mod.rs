@@ -35,41 +35,32 @@ pub(crate) async fn wapc_and_wasi_scenario(handle: Handle<Request<Body>, Respons
                 (&http::Method::GET, "/apis/apps/v1", None, false) => {
                     send_response(send, fixtures::apps_v1_resource_list());
                 }
-                (&http::Method::GET, "/api/v1/namespaces", Some("customer-id=1"), false) => {
+                (&http::Method::GET, "/api/v1/namespaces", None, false) => {
                     send_response(send, fixtures::namespaces());
                 }
-                (&http::Method::GET, "/api/v1/namespaces", Some("customer-id=1"), true) => {
+                (&http::Method::GET, "/api/v1/namespaces", None, true) => {
                     send_response(
                         send,
                         fixtures::namespaces_watch_bookmark(watch_resource_version.unwrap()),
                     );
                 }
-                (
-                    &http::Method::GET,
-                    "/apis/apps/v1/namespaces/customer-1/deployments",
-                    None,
-                    false,
-                ) => {
+                (&http::Method::GET, "/apis/apps/v1/deployments", None, false) => {
                     send_response(send, fixtures::deployments());
                 }
-                (
-                    &http::Method::GET,
-                    "/apis/apps/v1/namespaces/customer-1/deployments",
-                    None,
-                    true,
-                ) => {
+                (&http::Method::GET, "/apis/apps/v1/deployments", None, true) => {
                     send_response(
                         send,
                         fixtures::deployments_watch_bookmark(watch_resource_version.unwrap()),
                     );
                 }
-                (
-                    &http::Method::GET,
-                    "/api/v1/namespaces/customer-1/services/api-auth-service",
-                    None,
-                    false,
-                ) => {
-                    send_response(send, fixtures::api_auth_service());
+                (&http::Method::GET, "/api/v1/services", None, false) => {
+                    send_response(send, fixtures::services());
+                }
+                (&http::Method::GET, "/api/v1/services", None, true) => {
+                    send_response(
+                        send,
+                        fixtures::services_watch_bookmark(watch_resource_version.unwrap()),
+                    );
                 }
                 _ => {
                     panic!("unexpected request: {:?}", request);

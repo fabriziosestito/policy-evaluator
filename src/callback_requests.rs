@@ -184,12 +184,6 @@ pub enum CallbackRequestType {
         api_version: String,
         /// Singular PascalCase name of the resource
         kind: String,
-        /// A selector to restrict the list of returned objects by their labels.
-        /// Defaults to everything if `None`
-        label_selector: Option<String>,
-        /// A selector to restrict the list of returned objects by their fields.
-        /// Defaults to everything if `None`
-        field_selector: Option<String>,
         /// The instant in time to compare the last change of the resources
         #[serde(with = "tokio_instant_serializer")]
         since: Instant,

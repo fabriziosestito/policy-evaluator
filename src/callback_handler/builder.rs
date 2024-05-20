@@ -4,8 +4,8 @@ use policy_fetcher::sources::Sources;
 use std::sync::Arc;
 use tokio::sync::{mpsc, oneshot};
 
-use super::CallbackHandler;
 use super::{oci, sigstore_verification};
+use crate::callback_handler::{kubernetes::Client, CallbackHandler};
 use crate::callback_requests::CallbackRequest;
 
 const DEFAULT_CHANNEL_BUFF_SIZE: usize = 100;
@@ -17,6 +17,7 @@ pub struct CallbackHandlerBuilder {
     shutdown_channel: oneshot::Receiver<()>,
     trust_root: Option<Arc<ManualTrustRoot<'static>>>,
     kube_client: Option<kube::Client>,
+    db_pool: sqlx::SqlitePool,
 }
 
 impl CallbackHandlerBuilder {
@@ -27,6 +28,7 @@ impl CallbackHandlerBuilder {
             channel_buffer_size: DEFAULT_CHANNEL_BUFF_SIZE,
             trust_root: None,
             kube_client: None,
+            db_pool: sqlx::SqlitePool::connect_lazy("sqlite::memory:").unwrap(),
         }
     }
 
@@ -56,6 +58,11 @@ impl CallbackHandlerBuilder {
         self
     }
 
+    pub fn db_pool(mut self, pool: sqlx::SqlitePool) -> Self {
+        self.db_pool = pool;
+        self
+    }
+
     /// Create a CallbackHandler object
     pub async fn build(self) -> Result<CallbackHandler> {
         let (tx, rx) = mpsc::channel::<CallbackRequest>(self.channel_buffer_size);
@@ -65,7 +72,11 @@ impl CallbackHandlerBuilder {
                 .await?
                 .to_owned();
 
-        let kubernetes_client = self.kube_client.map(super::kubernetes::Client::new);
+        let kubernetes_client = if let Some(kube_client) = self.kube_client {
+            Some(Client::new(kube_client, self.db_pool))
+        } else {
+            None
+        };
 
         Ok(CallbackHandler {
             oci_client,
